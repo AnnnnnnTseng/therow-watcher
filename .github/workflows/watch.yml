@@ -1,0 +1,56 @@
+name: The Row 補貨監控
+
+on:
+  schedule:
+    - cron: '7 * * * *'      # 每小時第 7 分（避開整點尖峰，排隊比較短）
+  workflow_dispatch:          # 可在 Actions 頁面手動執行
+    inputs:
+      test:
+        description: '寄一封測試通知'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write             # 用來 commit state.json
+  issues: write               # 用來開補貨 Issue
+
+concurrency:
+  group: therow-watch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 檢查庫存
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: |
+          if [ "${{ inputs.test }}" = "true" ]; then
+            python watch.py --test
+          else
+            python watch.py
+          fi
+
+      - name: 儲存狀態
+        run: |
+          if [ -n "$(git status --porcelain state.json)" ]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git commit -m "狀態更新 $(date -u '+%Y-%m-%d %H:%M UTC')"
+            git push
+          else
+            echo "狀態沒有變化，不需要 commit"
+          fi
