@@ -96,8 +96,8 @@ def parse(data):
 # ---------- 通知管道 1：GitHub Issue（不需要任何密碼）----------
 
 def create_issue(title, body):
-    token = os.environ.get("GITHUB_TOKEN")
-    repo = os.environ.get("GITHUB_REPOSITORY")
+    token = env("GITHUB_TOKEN")
+    repo = env("GITHUB_REPOSITORY")
     if not token or not repo:
         log("  (沒有 GITHUB_TOKEN/GITHUB_REPOSITORY，跳過建立 Issue)")
         return False
@@ -154,16 +154,27 @@ def create_issue(title, body):
 
 # ---------- 通知管道 2：SMTP（可選，要設 secrets）----------
 
-def send_email(subject, text_body, html_body=None):
-    host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
-    port = int(os.environ.get("SMTP_PORT", "587"))
-    user = os.environ.get("SMTP_USER", "")
-    pw = os.environ.get("SMTP_PASSWORD", "")
-    to = os.environ.get("MAIL_TO", "") or user
+def env(name, default=""):
+    """讀環境變數。GitHub 對「未設定的 secret」會給空字串而不是不設定，
+    所以空字串必須當成沒有，否則預設值永遠不會生效。"""
+    return (os.environ.get(name) or "").strip() or default
 
+
+def send_email(subject, text_body, html_body=None):
+    # 先確認有帳密再解析其他設定，避免沒設定時還去 int() 空字串
+    user = env("SMTP_USER")
+    pw = env("SMTP_PASSWORD")
     if not user or not pw:
         log("  (未設定 SMTP secrets，略過直接寄信 — Issue 通知不受影響)")
         return False
+
+    host = env("SMTP_HOST", "smtp.gmail.com")
+    try:
+        port = int(env("SMTP_PORT", "587"))
+    except ValueError:
+        log(f"  (SMTP_PORT 不是數字: {env('SMTP_PORT')!r}，改用 587)")
+        port = 587
+    to = env("MAIL_TO", user)
 
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -190,6 +201,17 @@ def send_email(subject, text_body, html_body=None):
         return False
 
 
+def notify_all(subject, text, html=None):
+    """送出所有通知管道。任何一個炸掉都不影響其他管道與庫存檢查本身。"""
+    ok = False
+    for fn, args in ((create_issue, (subject, text)), (send_email, (subject, text, html))):
+        try:
+            ok = fn(*args) or ok
+        except Exception as e:                      # noqa: BLE001
+            log(f"  (通知管道 {fn.__name__} 例外: {type(e).__name__}: {e})")
+    return ok
+
+
 def build_message(info, url, sizes):
     price = f"${info['price']:,.0f}"
     sz = ", ".join(sizes) if sizes else "One Size"
@@ -211,8 +233,8 @@ def main():
             "https://www.therow.com/products/margaux-shoulder-12-black",
             ["Black / One Size"])
         t = "這是一封測試通知，用來確認管道暢通。\n\n" + t
-        create_issue("✅ 測試通知（可直接關閉）", t)
-        send_email("✅ The Row 監控：測試信", t, h)
+        ok = notify_all("✅ 測試通知（可直接關閉）", t, h)
+        print("::notice::測試通知已送出" if ok else "::warning::沒有任何通知管道成功")
         return 0
 
     state = load_state()
@@ -233,8 +255,7 @@ def main():
 
         if now and prev is not True:
             subject, text, html = build_message(info, url, sizes)
-            create_issue(subject, text)
-            send_email(subject, text, html)
+            notify_all(subject, text, html)
         elif not now and prev is True:
             log("  >>> 又賣完了")
 
